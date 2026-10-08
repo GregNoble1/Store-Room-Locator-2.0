@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Med Storage Locator</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2430;--mut:#667085;--line:#e1e5ea;--acc:#0b6bcb;--accbg:#e6f0fb;--ok:#117a4d;--bad:#b42318;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1f26;--ink:#e8ecf1;--mut:#9aa4b2;--line:#2b323c;--acc:#5aa9f5;--accbg:#1b2a3c;--ok:#4cc38a;--bad:#f97066}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1a1f26;--ink:#e8ecf1;--mut:#9aa4b2;--line:#2b323c;--acc:#5aa9f5;--accbg:#1b2a3c;--ok:#4cc38a;--bad:#f97066}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:820px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 12px}
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tab{flex:1;padding:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;font:inherit;font-weight:600;cursor:pointer}
+.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+input[type=text],input[type=search]{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit}
+button.b{padding:9px 13px;border:1px solid var(--acc);background:var(--acc);color:#fff;border-radius:9px;font:inherit;font-weight:600;cursor:pointer}
+button.g{border-color:var(--line);background:transparent;color:var(--ink)}
+button.x{border:0;background:transparent;color:var(--mut);cursor:pointer;font-size:16px;padding:2px 6px}
+.badge{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:99px;background:var(--accbg);color:var(--acc);margin-right:6px}
+.loc{color:var(--mut);margin-top:3px}.loc b{color:var(--ink)}
+.name{font-weight:700;font-size:16px}
+.mut{color:var(--mut)}
+.ref{font-size:12px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:0 5px;white-space:nowrap}
+.add input.r{max-width:38%}
+details{margin:6px 0 6px 12px;border-left:2px solid var(--line);padding-left:10px}
+details>summary{cursor:pointer;font-weight:600;padding:4px 0;display:flex;align-items:center;gap:6px}
+details>summary .sp{flex:1}
+.add{display:flex;gap:6px;margin:6px 0}
+.add input{padding:7px 10px}
+.item{display:flex;align-items:center;padding:2px 0 2px 4px}.item span{flex:1}
+.err{color:var(--bad)}.okc{color:var(--ok)}
+.err2{}#warn{position:sticky;top:0;z-index:5}.warn{border:1px solid var(--bad);background:var(--accbg);padding:8px 10px;border-radius:8px;margin-bottom:10px;color:var(--ink)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;font-size:13px}td,th{border:1px solid var(--line);padding:3px 8px;text-align:left}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🧰 Med Storage Locator</h1>
+  <div id="warn"></div>
+  <div class="tabs">
+    <button class="tab on" data-t="search">Search</button>
+    <button class="tab" data-t="browse">Browse &amp; add</button>
+    <button class="tab" data-t="import">Excel upload</button>
+  </div>
+  <section id="search">
+    <input type="search" id="q" placeholder="Search an item, tray or REF Code (e.g. 6.5 45mm)…" autocomplete="off">
+    <div id="results" style="margin-top:12px"></div>
+  </section>
+  <section id="browse" hidden></section>
+  <section id="import" hidden></section>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+let editingRef=null, confirming=null, racks=[], db=null, open=new Set(), pending=null, msg=null;
+const $=s=>document.querySelector(s);
+function h(t,p,...c){const e=document.createElement(t);for(const k in p||{}){if(k==='class')e.className=p[k];else if(k.startsWith('on'))e[k]=p[k];else e.setAttribute(k,p[k])}c.flat().forEach(x=>{if(x!=null&&x!==false)e.append(x.nodeType?x:document.createTextNode(x))});return e}
+const norm=s=>String(s==null?'':s).trim();
+const same=(a,b)=>norm(a).toLowerCase()===norm(b).toLowerCase();
+const slug=s=>norm(s).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'rack';
+function find(arr,name){return arr.find(x=>same(x.name,name))}
+
+async function save(r){
+  if(!db){render();return}
+  try{await db.doc('racks/'+r.id).set({name:r.name,shelves:r.shelves})}
+  catch(e){warn('Could not save: '+(e.message||e.code||e)+'. You may not have edit access.')}
+}
+async function removeRack(r){
+  racks=racks.filter(x=>x!==r);
+  if(db){try{await db.doc('racks/'+r.id).delete()}catch(e){warn('Could not delete: '+(e.message||e.code))}}
+  render();
+}
+let wt;function warn(t){const w=$('#warn');w.replaceChildren(t?h('div',{class:'warn'},t):'');clearTimeout(wt);if(t)wt=setTimeout(()=>w.replaceChildren(),8000)}
+
+/* ---------- Search ---------- */
+function flat(){
+  const out=[];
+  racks.forEach(r=>{
+    out.push({type:'Rack',name:r.name,path:[],extra:r.shelves.length+' shelves'});
+    r.shelves.forEach(s=>{
+      out.push({type:'Shelf',name:s.name,path:[['Rack',r.name]],extra:s.trays.length+' trays'});
+      s.trays.forEach(t=>{
+        out.push({type:'Tray',name:t.name,path:[['Rack',r.name],['Shelf',s.name]],items:t.items.map(i=>i.name),ref:t.ref});
+        t.items.forEach(i=>out.push({type:'Item',name:i.name,path:[['Rack',r.name],['Shelf',s.name],['Tray',t.name]],ref:i.ref}));
+      });
+    });
+  });
+  return out;
+}
+const fold=s=>String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[×*]/g,'x').replace(/(\d),(\d)/g,'$1.$2');
+const squash=s=>fold(s).replace(/[^a-z0-9.]+/g,'');
+const words=s=>fold(s).split(/[^a-z0-9.]+/).filter(Boolean);
+function lev(a,b){if(Math.abs(a.length-b.length)>1)return 9;const d=[];for(let i=0;i<=a.length;i++){d[i]=[i];for(let j=1;j<=b.length;j++)d[i][j]=i?0:j}
+  for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return d[a.length][b.length]}
+function wordScore(w,text){
+  const f=fold(text);
+  if(f.includes(w))return 3;
+  const sq=squash(text),sw=squash(w);
+  if(sw&&sq.includes(sw))return 2;
+  const parts=(w.match(/\d+(?:\.\d+)?|[a-z]+/g)||[]).filter(p=>p.length>1||/\d/.test(p));
+  if(parts.length>1&&parts.every(p=>f.includes(p)))return 2;
+  if(w.length>=4&&words(text).some(t=>lev(t,w)<=1))return 1;
+  return 0;
+}
+function refScore(w,ref){
+  if(fold(ref).includes(w))return 3;
+  const sw=squash(w);
+  return sw&&squash(ref).includes(sw)?2:0;
+}
+function score(q,e){
+  const nm=e.name,pathText=e.path.map(x=>x[1]).join(' ');
+  let total=0,inName=0;
+  for(const w of q){
+    const a=Math.max(wordScore(w,nm),e.ref?refScore(w,e.ref):0);
+    if(a){inName++;total+=a*2;continue}
+    const b=pathText?wordScore(w,pathText):0;
+    if(!b)return 0;
+    total+=b;
+  }
+  if(!inName)return 0;
+  if(fold(nm)===q.join(' '))total+=5;
+  return total;
+}
+function renderSearch(){
+  const raw=norm($('#q').value), box=$('#results');
+  if(!racks.length){box.replaceChildren(h('p',{class:'mut'},'Nothing stored yet. Add racks under “Browse & add” or upload an Excel file.'));return}
+  if(!raw){box.replaceChildren(h('p',{class:'mut'},'Type to find where an item or tray is stored. Partial words, sizes (e.g. “6.5 45mm”), REF Codes and small typos all work.'));return}
+  const q=fold(raw).split(/\s+/).filter(Boolean);
+  const hits=flat().map(e=>[score(q,e),e]).filter(x=>x[0]>0).sort((a,b)=>b[0]-a[0]).slice(0,100).map(x=>x[1]);
+  if(!hits.length){box.replaceChildren(h('p',{class:'mut'},'No matches for “'+raw+'”.'));return}
+  box.replaceChildren(...hits.map(e=>h('div',{class:'card'},
+    h('div',null,h('span',{class:'badge'},e.type),h('span',{class:'name'},e.name)),
+    e.path.length?h('div',{class:'loc'},'📍 ',...e.path.flatMap(([k,v],i)=>[i?' › ':'',k+' ',h('b',null,v)])):null,
+    e.items?h('div',{class:'loc'},e.items.length?'Contains: '+e.items.join(', '):'Empty tray'):null,
+    e.extra?h('div',{class:'loc'},e.extra):null)));
+}
+
+/* ---------- Browse & add ---------- */
+function addRow(ph,fn,withRef){
+  const i=h('input',{type:'text',placeholder:ph});
+  const r=withRef?h('input',{type:'text',class:'r',placeholder:'REF Code (optional)'}):null;
+  const go=()=>{const v=norm(i.value);if(v){fn(v,r?norm(r.value):'');i.value='';if(r)r.value=''}};
+  const k=e=>{if(e.key==='Enter')go()};i.onkeydown=k;if(r)r.onkeydown=k;
+  return h('div',{class:'add'},i,r,h('button',{class:'b g',onclick:go},'Add'));
+}
+function refBtn(key,obj){
+  return h('button',{class:'x',title:obj.ref?'Edit REF Code':'Add REF Code',onclick:e=>{e.preventDefault();e.stopPropagation();editingRef=key;open.add(key);render()}},'🏷️');
+}
+function refEditor(obj,r){
+  const i=h('input',{type:'text',placeholder:'REF Code (optional)',value:obj.ref||''});
+  const done=()=>{editingRef=null;render()};
+  const go=()=>{const v=norm(i.value);if(v)obj.ref=v;else delete obj.ref;editingRef=null;save(r);render()};
+  i.onkeydown=e=>{if(e.key==='Enter')go();else if(e.key==='Escape')done()};
+  setTimeout(()=>i.focus());
+  return h('div',{class:'add'},i,h('button',{class:'b g',onclick:go},'Save REF'),h('button',{class:'b g',onclick:done},'Cancel'));
+}
+function node(key,label,count,onDel,meta,...kids){
+  const stop=f=>e=>{e.preventDefault();e.stopPropagation();f()};
+  const ctl=confirming===key
+    ?h('span',null,h('span',{class:'err'},'Delete? '),h('button',{class:'b',onclick:stop(()=>{confirming=null;onDel()})},'Yes'),' ',h('button',{class:'b g',onclick:stop(()=>{confirming=null;render()})},'No'))
+    :h('button',{class:'x',title:'Delete',onclick:stop(()=>{confirming=key;render()})},'✕');
+  const d=h('details',null,h('summary',null,label,h('span',{class:'mut'},count),meta,h('span',{class:'sp'}),ctl),...kids);
+  if(open.has(key)||confirming===key||editingRef===key)d.open=true;
+  d.ontoggle=()=>{d.open?open.add(key):open.delete(key)};
+  return d;
+}
+function renderBrowse(){
+  const b=$('#browse');
+  b.replaceChildren(
+    h('div',{class:'card'},h('b',null,'Add a rack'),addRow('Rack name (e.g. Rack A)',v=>{
+      if(find(racks,v))return warn('That rack already exists.');
+      const r={id:slug(v)+'-'+Date.now().toString(36).slice(-3),name:v,shelves:[]};racks.push(r);open.add(r.id);save(r);render()})),
+    ...racks.map(r=>node(r.id,r.name,' · '+r.shelves.length+' shelves',()=>removeRack(r),null,
+      ...r.shelves.map(s=>node(r.id+'/'+s.name,s.name,' · '+s.trays.length+' trays',()=>{r.shelves=r.shelves.filter(x=>x!==s);save(r);render()},null,
+        ...s.trays.map(t=>{const tk=r.id+'/'+s.name+'/'+t.name;
+          return node(tk,t.name,' · '+t.items.length+' items',()=>{s.trays=s.trays.filter(x=>x!==t);save(r);render()},
+            [t.ref?h('span',{class:'ref'},'REF '+t.ref):null,refBtn(tk,t)],
+            editingRef===tk?refEditor(t,r):null,
+            ...t.items.map(i=>{const ik=tk+'#'+i.name;
+              return h('div',null,
+                h('div',{class:'item'},h('span',null,i.name,i.ref?h('span',{class:'ref',style:'margin-left:6px'},'REF '+i.ref):null),refBtn(ik,i),
+                  h('button',{class:'x',title:'Remove',onclick:()=>{t.items=t.items.filter(x=>x!==i);save(r);render()}},'✕')),
+                editingRef===ik?refEditor(i,r):null)}),
+            addRow('Add item to this tray',(v,ref)=>{if(find(t.items,v))return warn('Item already in this tray.');t.items.push(ref?{name:v,ref}:{name:v});save(r);render()},true))}),
+        addRow('Add tray to this shelf',(v,ref)=>{if(find(s.trays,v))return warn('Tray already on this shelf.');s.trays.push(ref?{name:v,items:[],ref}:{name:v,items:[]});open.add(r.id+'/'+s.name);save(r);render()},true))),
+      addRow('Add shelf to this rack',v=>{if(find(r.shelves,v))return warn('Shelf already in this rack.');r.shelves.push({name:v,trays:[]});save(r);render()})))
+  );
+  if(!racks.length)b.append(h('p',{class:'mut'},'No racks yet — add one above or use the Excel upload.'));
+}
+
+/* ---------- Excel import ---------- */
+function parseRows(ws){
+  const raw=XLSX.utils.sheet_to_json(ws,{defval:''});
+  const rows=[];let prev={rack:'',shelf:'',tray:''};
+  raw.forEach(o=>{
+    const k={};for(const key in o)k[key.trim().toLowerCase()]=norm(o[key]);
+    const cur={rack:k.rack||'',shelf:k.shelf||'',tray:k.tray||'',item:k.item||k['item name']||'',trayRef:k['tray ref']||k['tray ref code']||'',itemRef:k['item ref']||k['item ref code']||''};
+    let changed=false,inh=false;
+    ['rack','shelf','tray'].forEach(c=>{if(cur[c])changed=true;else if(!changed){cur[c]=prev[c];if(c==='tray')inh=true}});
+    if(inh&&!cur.trayRef)cur.trayRef=prev.trayRef||'';
+    prev={rack:cur.rack,shelf:cur.shelf,tray:cur.tray,trayRef:cur.trayRef};
+    if(cur.rack||cur.item)rows.push(cur);
+  });
+  return rows;
+}
+function applyRows(rows){
+  const touched=new Map(),n={racks:0,shelves:0,trays:0,items:0,skipped:0};
+  rows.forEach(r=>{
+    if(!r.rack){n.skipped++;return}
+    let rk=find(racks,r.rack);
+    if(!rk){rk={id:slug(r.rack)+'-'+Date.now().toString(36).slice(-3),name:r.rack,shelves:[]};racks.push(rk);n.racks++}
+    touched.set(rk.id,rk);
+    if(!r.shelf)return;
+    let sh=find(rk.shelves,r.shelf);if(!sh){sh={name:r.shelf,trays:[]};rk.shelves.push(sh);n.shelves++}
+    if(!r.tray)return;
+    let tr=find(sh.trays,r.tray);if(!tr){tr={name:r.tray,items:[]};sh.trays.push(tr);n.trays++}
+    if(r.trayRef&&!tr.ref)tr.ref=r.trayRef;
+    if(!r.item)return;
+    const ex=find(tr.items,r.item);
+    if(ex){if(r.itemRef&&!ex.ref)ex.ref=r.itemRef;n.skipped++;return}
+    tr.items.push(r.itemRef?{name:r.item,ref:r.itemRef}:{name:r.item});n.items++;
+  });
+  return {n,touched:[...touched.values()]};
+}
+function renderImport(){
+  const p=$('#import');
+  const file=h('input',{type:'file',accept:'.xlsx,.xls,.csv'});
+  file.onchange=async()=>{
+    const f=file.files[0];if(!f)return;
+    try{
+      const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+      const rows=parseRows(wb.Sheets[wb.SheetNames[0]]);
+      pending=rows;msg=rows.length?null:{err:true,t:'No usable rows found. Check the column headings: Rack, Shelf, Tray, Item.'};
+    }catch(e){pending=null;msg={err:true,t:'Could not read that file.'}}
+    renderImport();
+  };
+  const tpl=h('button',{class:'b g',onclick:async()=>{
+    const ws=XLSX.utils.aoa_to_sheet([['Rack','Shelf','Tray','Item','Tray REF','Item REF'],['Rack A','Shelf 1','Tray 1','Adhesive bandages','TR-001','AB-100'],['Rack A','Shelf 1','Tray 1','Gauze pads','','GZ-200'],['Rack A','Shelf 1','Tray 2','Tourniquet','','']]);
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Storage');
+    const data=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+    try{const d=await claude.use('downloads');if(d)await d.save({filename:'storage-template.xlsx',data})
+      else warn('Downloads are not available in this view.')}catch(e){}
+  }},'Download template');
+  const prev=pending&&pending.length?h('div',{class:'card'},
+    h('b',null,pending.length+' rows ready to import'),
+    h('div',{class:'scroll'},h('table',null,h('tr',null,...['Rack','Shelf','Tray','Item'].map(x=>h('th',null,x))),
+      ...pending.slice(0,6).map(r=>h('tr',null,h('td',null,r.rack),h('td',null,r.shelf),h('td',null,r.tray),h('td',null,r.item))))),
+    pending.length>6?h('div',{class:'mut'},'…and '+(pending.length-6)+' more'):null,
+    h('div',{class:'add'},h('button',{class:'b',onclick:async()=>{
+      const {n,touched}=applyRows(pending);pending=null;
+      msg={t:`Added ${n.racks} racks, ${n.shelves} shelves, ${n.trays} trays, ${n.items} items`+(n.skipped?` (${n.skipped} duplicate/skipped rows)`:'')+'.'};
+      render();for(const r of touched)await save(r);
+    }},'Import now'),h('button',{class:'b g',onclick:()=>{pending=null;renderImport()}},'Cancel'))):null;
+  p.replaceChildren(
+    h('div',{class:'card'},
+      h('b',null,'Mass upload from Excel'),
+      h('p',{class:'mut'},'Use a sheet with columns headed Rack, Shelf, Tray, Item (first sheet is read; .csv also works). Existing entries are kept and matching names are merged, not duplicated. Blank Rack/Shelf/Tray cells inherit the row above, so merged-style layouts work. Optional extra columns: Tray REF and Item REF.'),
+      h('div',{class:'add'},tpl)),
+    h('div',{class:'card'},file),
+    msg?h('p',{class:msg.err?'err':'okc'},msg.t):null,
+    prev);
+}
+
+function render(){renderSearch();renderBrowse();if(!pending&&!document.activeElement?.closest('#import'))renderImport()}
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
+  ['search','browse','import'].forEach(s=>$('#'+s).hidden=s!==t.dataset.t);
+});
+$('#q').oninput=renderSearch;
+render();
+
+(async()=>{
+  try{db=await claude.use('db')}catch(e){db=null}
+  if(!db){warn('Shared storage isn’t available in this view, so changes live only in this browser tab and will be lost on reload.');return}
+  db.collection('racks').onSnapshot(snap=>{
+    racks=snap.docs.map(d=>{const v=JSON.parse(JSON.stringify(d.data()||{}));return {id:d.id,name:v.name||d.id,shelves:v.shelves||[]}})
+      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+    render();
+  },e=>warn('Live sync stopped: '+(e.message||e.code)));
+})();
+</script>
+</body>
+</html>
